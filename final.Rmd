@@ -1,0 +1,558 @@
+---
+title: "Final: Lung Cancer Prediction"
+author:
+  - "Amy Tan"
+  - "Elizabeth Lee"
+  - "Sandy Li"
+  - "Jinyu Li"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: inline
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+Lung cancer is a disease where the cells in the lungs grow out of control, and it can spread from the lungs to lymph nodes or other organs in the body [^1]. According to the World Health Organization (WHO), lung cancer is "the leading cause of cancer-related deaths worldwide, accounting for the highest mortality rates among both men and women," making it a significant public health concern [^2].In 2023 alone, lung cancer accounted for an estimated 127,070 deaths, with 238,340 new cases [^3].
+
+There has been a body of work in the literature examining and identifying various causes and symptoms associated with lung cancer. A 2019 study by the Global Burden of Disease found that the highest possible causes for global lung cancer was smoking with 62%, outdoor air of particulate matter (PM) of 2.5 microns with 15%, and second hand smoking with 5.8% [^4]. Even as tobacco smoking is projected and expected to decline in the next 25 years, there is still an  ongoing increase in the proportion of lung cancers among individuals who have never smoked before. The seventh leading cause of cancer deaths in both sexes globally has been lung cancers in individuals who never smoked. Notably, the estimated number of lung cancer deaths attributable to air pollution has surged by almost 30% since 2007, a period coinciding with declining smoking rates and an increase in air pollution levels [^5]. Additionally, other symptoms of lung cancer include unending coughing, pain in one’s chest, shortness of breath, wheezing, coughing of blood, lethargic, and weight loss with no known cause [^6]. 
+
+Symptoms and predictors are also important as the severity of lung cancer patients' symptoms and side effects can significantly decrease their quality of life, which helps to predict survival [^7]. It is especially important among patients who are receiving palliative or specialized medical care. This lead to the idea that in addition to being able to predict the development of lung cancer and quality of life, symptoms and factors could potentially be used to also predict the severity of lung cancer an individual would have.
+
+## Question
+What are some possible symptoms that can be used to predict an individual's severity of lung cancer?
+
+## The Data
+The data that we will be using to answer this question comes from Kaggle[^8]; it contains information lung cancer patients, including the severity of their cancer and other factors, such as their age, air pollution exposure, and genetic risk. Limitations from the data set are expanded on in our results/discussion.
+
+### Load Packages
+
+We first loaded in the packages that we will be using to wrangle our data and perform our analysis.
+```{r load-packages, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(skimr)
+library(dplyr)
+library(olsrr)
+
+#libraries for the analysis part.
+library(MASS) # Modern Applied Statistics with S
+library(recipes)
+library(workflows)
+library(parsnip)
+library(caret)
+library(e1071)
+```
+
+### Data Import
+
+We then loaded in our data set that we will be using.
+
+```{r, message=FALSE}
+cancer_set <- read_csv("data/cancer_patient_data_sets.csv")
+```
+
+### Data Wrangling
+
+We first skimmed through our data to ensure that we didn't have any empty or missing values for all of the columns and to give us a sense of the distribution and spread of the data.
+
+```{r}
+# Skimming data, ensuring there are no missing values
+cancer_set |>
+  skim()
+```
+
+We then cleaned the column names in our dataset to make all characters lowercase, change spaces to _ in order to make them more usable in our code, and get rid of _ that were unnecessary.
+
+```{r}
+# Cleaning column names
+cancer_set <- cancer_set |>
+  clean_names() |>
+# Removing _ from occupational_hazards column
+  rename (occupational_hazards = occu_pational_hazards)
+```
+
+We then ordered our level column in increasing order, from Low, Medium, to High.
+```{r}
+# Releveling our level column to Low, Medium, and High
+cancer_set <-
+  cancer_set |>
+  mutate(level = fct_relevel(level, "Low", "Medium", "High"))
+```
+
+We then created a list of all the factors that the dataset provides information on as potential predictors of lung cancer severity to use for easier access in our code later on.
+
+```{r}
+# Creating a list of potential factors on lung cancer from data
+cancer_factors <-  colnames(Filter(function(x) !all(is.na(x)), cancer_set[3:25]))
+```
+
+```{r, include=FALSE}
+#We pull their types to make sure all factors in the dataset are stored with the correct type.
+#str(cancer_set)
+
+#We see from the output that gender is stored as numeric factor while it's not so we convert the gender column in cancer_set to the factor.
+#cancer_set$gender <- as.factor(cancer_set$gender)
+```
+
+
+## Analysis
+
+### Exploratory Data Analysis
+
+#### Exploring the Distributions and Trends in Our Data
+
+We see in the skimmed summary that distribution of gender is right skewed, so we want to get a more detailed plot of gender distibution among all patients. 
+
+```{r}
+# Just age histogram
+just_age <- cancer_set |>
+  pivot_longer(3)
+ggplot(just_age, aes(x = value)) +
+  geom_histogram() +
+  labs(title = "Lung Cancer Patient's Age")
+```
+  
+  The distribution for age is nearly normal, it's hard to tell if it's right skewed or not. So we would like to plot further about age distribution within each cancer severity levels to see if exists any trend.
+
+```{r}
+ggplot(cancer_set, aes(x = level, y = age)) +
+  geom_jitter() +
+  geom_boxplot() +
+  labs(title = "Age by Cancer Severity Level")
+```
+
+   Although the median age is slightly lower in the low severity group, in general, it appears that there is no large difference between distribution of age in each several level.
+  
+  Then, we plotted all the remaining given factors in our data set below in histogram to get a sense of their distributions. The graphs show that there seem to be more differences in severity of possible factors in air pollution, chest pain, chronic lung disease, having a dust allergy, genetic risk, obesity, and occupational hazards. 
+
+```{r}
+#All other factors in a faceted histogram
+cancer_long <- cancer_set |> 
+  pivot_longer(4:25) 
+
+ggplot(cancer_long, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~name)
+```
+
+  Thus, once we've identified various potential factors to examine further in depth, we can plot the factor severity by the severity of the cancer. 
+
+  We first plotted gender, where it appears that in more severe forms of lung cancer, more men (1) than women (2) are impacted. In low severity lung cancer, both men and women are relatively equally impacted. Gender is discussed further in our limitations section.
+```{r}
+# Plotting gender, faceted by level of lung cancer
+just_gender <- cancer_set |>
+  pivot_longer(4)
+ggplot(just_gender, aes(x = as.factor(value))) +
+  geom_bar(width = 0.6) +
+  facet_wrap(~level) +
+  labs(title = "Gender by Cancer Severity",
+       x = "Gender")
+```
+
+  For air pollution, those who score high on air pollution tend to have high severity lung cancer - the majority of 6+ air pollution scores fall in the high severity lung cancer level.
+```{r}
+# Plotting air pollution, faceted by level of lung cancer
+just_air_pollution <- cancer_set |>
+  pivot_longer(5)
+ggplot(just_air_pollution, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Air Pollution by Cancer Severity")
+```
+
+  Chest pain follows a similar pattern to air pollution where more extreme obesity scores are found in the high severity cancer level. Lower scores tend to fall in the low or medium cancer severity level.
+```{r}
+# Plotting chest pain, faceted by level of lung cancer
+just_chest_pain <- cancer_set |>
+  pivot_longer(15)
+ggplot(just_chest_pain, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Chest Pain by Cancer Severity")
+```
+  
+  Chronic lung disease appears to occur more severely as severity of lung cancer also increases.
+```{r}
+# Plotting chronic lung disease, faceted by level of lung cancer
+just_chronic_lung_disease <- cancer_set |>
+  pivot_longer(10)
+ggplot(just_chronic_lung_disease, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Chronic Lung Disease by Cancer Severity")
+```
+
+Although the dust allergy severity is skewed right for low severity cancer, it becomes increasingly skewed left as the severity increases. This once again suggests the potential relationship of the increasing severity of symptoms/factors (with dust allergies in this case) with the severity of lung cancer.
+```{r}
+# Plotting dust allergies, faceted by level of lung cancer
+just_dust_allergy <- cancer_set |>
+  pivot_longer(7)
+ggplot(just_dust_allergy, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Dust Allergies by Cancer Severity")
+```
+
+Genetic risk seems to indicate that lower genetic risks tend to happen with low severity of cancer. The high genetic risks tend to occur with high severity of cancer, whereas medium severity of cancer seems to contain a mix of both low and high genetic risk levels.
+
+```{r}
+# Plotting genetic risk, faceted by level of lung cancer
+just_genetic_risk <- cancer_set |>
+  pivot_longer(9)
+ggplot(just_genetic_risk, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Genetic Risk by Cancer Severity")
+```
+
+The most severe levels of obesity (4 and up) also tend to fall with the highest severity of cancer, with over 300 patients with high severity lung cancer scoring at a 7 for obesity.
+```{r}
+# Plotting obesity, faceted by level of lung cancer
+just_obesity <- cancer_set |>
+  pivot_longer(12)
+ggplot(just_obesity, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Obesity by Cancer Severity")
+```
+
+Those with high lung cancer severity also scored the highest on occupational hazards.
+```{r}
+# Plotting occupational hazard, faceted by level of lung cancer
+just_occupational_hazard <- cancer_set |>
+  pivot_longer(8)
+ggplot(just_occupational_hazard, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~level) +
+  labs(title = "Occupational Hazard by Cancer Severity")
+```
+
+#### Exploring the Correlation of Factors
+
+  After knowing how levels of different symptoms are distributed across severity levels, we want to further explore if some of those symptoms are correlated with severity levels. 
+  Since most of our factors are ordinal variable(categorical), we would use Spearman's correlation as it assesses how well the relationship between two ordinal variables can be described using a monotonic function.correlation. We plot the Spearman correlations between variables to get a sense that what variables might be actually predictive, also exclude redundant variables that's not helpful for prediction. 
+  
+```{r}
+cancer_set <- cancer_set |> mutate(level_num= case_when(level == "Low" ~ "1",
+                                                      level == "Medium" ~ "2",
+                                                      level == "High" ~ "3")) |>
+  mutate(level_num = as.numeric(
+    level_num))
+
+corr_spearman <- cor(cancer_set |> dplyr::select(all_of(cancer_factors), level_num), method = "spearman")
+
+# Creating the correlation plot using Spearman's correlation matrix
+corrplot::corrplot(corr_spearman, tl.cex = 0.5)
+
+```
+
+  We could see from the plot that there are several factors showed a strong correlation with the level of severity, so we want to take a closer look of the correlation with those factor, including air_pollution, dust_allergy, genetic_risk, obesity, passive_smoker, coughing_of_blood, alcohol_use, etc, and eliminate those showed weaker correlation among these. 
+
+```{r, fig.height=10.5, fig.width= 11}
+selected_data <- cancer_set |>
+  dplyr::select(level_num, air_pollution, dust_allergy, genetic_risk, obesity, passive_smoker, coughing_of_blood, alcohol_use, chronic_lung_disease, chest_pain)
+
+correlation_matrix <- cor(selected_data, method = "spearman")
+
+corrplot::corrplot(correlation_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 20, 
+         col = colorRampPalette(c("#AD2D00","white", "#005B90"))(200),
+         text = TRUE  # Display correlation coefficients in the blocks
+         )
+#use mtext to make sure title is not always cut off
+mtext("Spearman Correlation Heatmap for Interested Symptoms", side = 3, line = -2, cex = 1.5, font = 2)
+```
+
+  We would only look at the top first row of block since we are interested in correlation of severity level with other symptoms. And among these, obesity and coughing of blood show the darker blue compare to others, indicated higher correlation coefficients. Then, we would turn the focus to obesity and coughing of blood. 
+
+```{r}
+#plotting levels by obesity
+cancer_set |> ggplot(aes(x = level, y = obesity, fill = level)) + geom_boxplot(color = "black") +
+stat_summary(fun = median,
+               geom = "point",
+               aes(group = 1),
+               col = "#AD2D00") +
+labs(x = "severity", y = "Obesity",
+       title = "Lung Cancer severity levels by obesity levels") +
+  theme_minimal() +
+  scale_fill_grey() +
+  theme(legend.position = "none") 
+
+```
+
+ The median obesity level is highlighted by the red dot. From the plot, the "Low" severity group has median overlapped with the first quartile, suggesting that about 1/4 of the data points clustered at level 2 obesity. The "Medium" severity group has a slightly higher median obesity level than the "Low" group, with median overlapped with 3rd quartile, indicating lots of data are at level 4. The "High" severity group does not have a box, which could mean there is insufficient data, or the values are very consistent at level 7. 
+ 
+```{r}
+table(cancer_set$level)
+```
+ This shows that each level of severity has sufficient data, so it must because all data points clustered at 7 except several outliers. Hence, this plot shows a tendency that more severe patients showed higher levels of obesity. 
+
+```{r}
+#plotting levels by coughing_of_blood
+cancer_set |> ggplot(aes(x = level, y = coughing_of_blood, fill = level)) +
+geom_boxplot(color = "black") +
+stat_summary(fun = median,
+               geom = "point",
+               aes(group = 1),
+               col = "#AD2D00") +
+labs(x = "severity", y = "coughing_of_blood",
+       title = "Lung cancer severity levels by coughing_of_blood") +
+  theme_minimal() +
+  scale_fill_grey() +
+  theme(legend.position = "none") 
+```
+
+ Similarly, the box plot for coughing of blood suggest a similar tendency that more severe patients showed higher levels of coughing blood. As median of "Low" severity group is level 2 with 1/4 of the data points at level 2. medium group has a median of level 4, and high severity group has a median at level 7, both overlapped with 1st quartile. 
+
+### Data Analysis 
+
+In order to further analysis the correlation of those symptoms with the severity of the cancer levels, we use Spearman's rank correlation rho to do so. 
+
+```{r}
+spearman_obesity <- cor.test(cancer_set$level_num, cancer_set$obesity, method = "spearman")
+
+spearman_obesity
+
+
+spearman_cough <- cor.test(cancer_set$level_num, cancer_set$coughing_of_blood, method = "spearman")
+
+spearman_cough
+```
+
+  A rho value close to 1 indicates a strong positive correlation. In this case, a value of 0.8153638 suggests a strong positive correlation between the 'Level' and 'Obesity'. which means that as the level of obesity increases, the level of the cancer severity tends to increase as well. 
+Same for coughing_of_blood, 0.7663184 indicates strong positive correlation between the 'Level' and 'coughing of blood', but its correlation is less strong than obesity.
+
+In order to further analyze the effects of multiple symptoms (predictors) in relation to the severity of the cancer levels, we used multiple linear regression to do so. 
+
+According to the Spearman's correlation test, since the p-values for both obesity and coughing are smaller than 0.05 , it is proved that there are significant associations between obesity and lung cancer AND coughing of blood and lung cancer.
+
+To further explore the relationship between the levels of predictors (lung cancer and coughing of blood) and the level of severity of lung cancer, we decide to use a model called ordinal logistic regression model. This model can efficiently analyze the relationship for ordinal predictors and outcome.
+
+First, preprocess the data by converting the variables to factors for easier machine learning use.
+```{r}
+cancer_set<- cancer_set |>
+  mutate(across(c(obesity, coughing_of_blood, level_num), as.factor)) 
+```
+
+
+Secondly, split the data into training data set and testing data set.
+```{r}
+set.seed(1234)
+# Two-third of the data will be training data, and the remaining will be testing data.
+cancer_split <- rsample::initial_split(data = cancer_set, prop = 2/3)
+print(cancer_split)
+
+# Split data using rsample:
+train_cancer <- rsample::training(cancer_split)
+test_cancer <- rsample::testing(cancer_split)
+
+# Compare with the distribution of the original data (see if their percentages are approximately similar).
+original_set <- count(cancer_set, coughing_of_blood)
+splitted_training_set <- count(train_cancer, coughing_of_blood)
+```
+
+Since the distributions of the training data set has similar distributions, the data is ready to be made into a recipe. We will create a recipe that uses the level of obesity and coughing of blood to predict the level of severity of lung cancer.
+```{r}
+simple_rec <- recipe(level_num ~ obesity + coughing_of_blood, data = train_cancer)
+summary(simple_rec)
+```
+
+Organize the predictors in an ascending order for a clearer level prediction and interpretation purpose.
+```{r}
+levels_obs <- as.character(1:7)
+levels_cough <- as.character(1:9)
+train_cancer$obesity <- factor(train_cancer$obesity, levels = levels_obs, ordered = TRUE)
+train_cancer$coughing_of_blood <- factor(train_cancer$coughing_of_blood, levels = levels_cough, ordered = TRUE)
+```
+
+Remove uninformative predictor variables that have near-zero variance in the recipe.
+```{r}
+simple_rec <- simple_rec |>
+  step_nzv(all_predictors())
+```
+
+Running the pre-processing recipe using prep().
+```{r}
+prepped_rec <- prep(simple_rec, training = train_cancer, retain = TRUE)
+summary(prepped_rec)
+```
+
+Extract pre-processed training data using bake().
+```{r}
+baked_train <- bake(prepped_rec, new_data = NULL)
+glimpse(baked_train)
+```
+Extract pre-processed testing data using bake().
+```{r}
+baked_test <- recipes::bake(prepped_rec, new_data = test_cancer)
+glimpse(baked_test)
+```
+
+Since there is no missing value, the data is ready for fitting a model.
+```{r}
+# `polr` uses the standard formula interface in R for specifying a regression model with outcome followed by predictors.
+# Hess=TRUE will have the model return the observed information matrix from optimization which is used to get standard errors.
+cancer_level_model <- polr(level_num ~ obesity + coughing_of_blood, data = baked_train, Hess = TRUE)
+summary(cancer_level_model)
+```
+
+We will dissect the meaning of the result step-by-step. 
+
+##### Intercept
+To interpret the intercepts, let's transform log odds into raw cumulative probabilities.
+```{r}
+# the raw cumulative probabilities
+cumsum(
+  prop.table(
+    table(baked_train$level_num)))
+```
+The numbers "1, 2, and 3" indicates the levels of severity, with 1 being the least severe. Through the raw cumulative probabilities, we can conclude that, in our data set, the estimated proportion of individuals with a low severity of lung cancer is 0.3108108, and the estimated proportion of individuals with a low or medium severity of lung cancer is 0.6306306.
+
+
+##### Coefficients
+The coefficients in an ordinal logistic regression model indicate how the log odd ratio of the dependent variable being in a higher category/ higher order polynomial function versus a lower category change with a one-unit change in the predictor variable. In other words, R recognizes the levels in a variable as distinct categories with a natural hierarchy, where the categories that appear later are larger than others. Thus, ".L" stands for a linear polynomial, and ".Q" stands for a quadratic polynomial, and the order increases in the result list. A positive coefficient implies that as the predictor variable increases, the odd (the likelihood that a particular event will occur compared to the likelihood that it won't) of the dependent variable being in a higher category increase. Similar idea, a negative coefficient suggests that higher values of the predictor are associated with lower odds of the dependent variable being in a higher category. 
+
+However, since there are so many independent variables in different order of polynomial function, we would like to eliminate some insignificant ones before interpreting. The way to do it is to look at the p-values of each predictor.
+
+```{r}
+sum <- summary(cancer_level_model)
+ctable <- coef(sum)
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+
+## add p value to the combined table
+cbind(ctable, "p value" = p)
+```
+
+According to the p-value whose cutoff is at a 0.05 level, only "obesity.L," "obesity.C," and "Obesity^5" shows significance in coefficient.
+- For "obesity.L," a positive coefficient (46.220455) suggests that as obesity increases from the lower levels towards the higher levels, the log-odds of being in a higher category of lung cancer severity compared to all lower categories combined increases.
+- "Obesity.C" represents a cubic polynomial function. Although we expect both increases and decreases in a cubic polynomial function, the coefficient (30.208482) suggests that the overall pattern is that as obesity increases from the lower levels towards the higher levels, the log-odds of being in a higher category of lung cancer severity increases.
+- Similarly, for "Obesity^5," it represents a 5th degree polynomial function. Since the coefficient is 9.074856, it suggests that as obesity increases from the lower levels towards the higher levels, the log-odds of being in a higher category of lung cancer severity increases.
+
+Since we get the same relationship from all three significant coefficients, we can conclude that as obesity increases from the lower levels towards the higher levels, the log-odds of being in a higher category of lung cancer severity increases. However, there may not be a strong relationship between the levels of coughing of blood and the severity of lung cancer. 
+
+However, people may argue an inconsistency in our conclusion because we did observe a significant relationship between the levels of coughing of blood and the severity of lung cancer before using the Spearman's correlation. However, there's no inconsistency because the Spearman’s correlation measures a monotonic relationship instead of simply linear, quadratic, or other higher ordered relationships. Since we are confident that we used the right model, the insignificance appeared in this model might be due to other factors:
+- confounding variables
+- The difference between clinical significance and statistical significance: Even if the statistical significance is not observed, there might be clinical relevance to the relationship between coughing of blood and lung cancer severity that needs further investigation.
+
+
+
+##### Model Performance
+To test our idea, we want to use V-fold Cross-validation to determine the model performance. Since 10 folds are commonly used in V-fold Cross Validation, according to the documentation of R [^9], we will follow the common practice here.
+
+```{r}
+# To ensure consistency and reproducibility, use the same seed.
+set.seed(1234)
+folds <- vfold_cv(baked_train, v = 10)
+results <- vector("list", length(folds$splits))
+
+for(i in seq_along(folds$splits)) {
+    # Split the data
+    split <- folds$splits[[i]]
+    train_data <- analysis(split)
+    test_data <- assessment(split)
+    
+    # Fit the model on training data
+    model <- polr(level_num ~ obesity + coughing_of_blood, data = train_data, Hess = TRUE)
+    # Predict on test data
+    pred <- predict(model, newdata = test_data, type = "class")
+    results[[i]] <- confusionMatrix(data = pred, reference = test_data$level_num)
+}
+
+# Calculate average performance
+mean_accuracy <- mean(sapply(results, function(x) x$overall['Accuracy']))
+print(paste0("The performance of the model that uses the both level of obesity and the coughing of blood to predict the severity of lung cancer is: ", mean_accuracy))
+```
+The V-fold cross validation method showed that using both the levels of obesity and the coughing of blood to predict the severity of lung cancer has an accuracy of 82.7%.
+
+If we create a new recipe, and only using the level of obesity (the only significant one in our model) to predict the severity of lung cancer, we only get an accuracy of 75.53%.
+```{r}
+# Create a new recipe
+simple_rec_new <- recipe(level_num ~ obesity, data = train_cancer)
+summary(simple_rec_new)
+
+#Remove uninformative predictor variables that have near-zero variance in the recipe.
+simple_rec_new <- simple_rec_new |>
+  step_nzv(all_predictors())
+
+#Running the pre-processing recipe using prep().
+prepped_rec <- prep(simple_rec_new, training = train_cancer, retain = TRUE)
+summary(prepped_rec)
+
+#Extract pre-processed training data using bake().
+baked_train_new <- bake(prepped_rec, new_data = NULL)
+glimpse(baked_train)
+
+
+polr(level_num ~ obesity, data = baked_train, Hess = TRUE)
+```
+
+```{r}
+### Create a new model performance assessment for the model only using the level of obesity to predict the severity of lung cancer
+# To ensure consistency and reproducibility, use the same seed.
+set.seed(1234)
+folds <- vfold_cv(baked_train_new, v = 10)
+results <- vector("list", length(folds$splits))
+
+for(i in seq_along(folds$splits)) {
+    # Split the data
+    split <- folds$splits[[i]]
+    train_data <- analysis(split)
+    test_data <- assessment(split)
+    
+    # Fit the model on training data
+    model <- polr(level_num ~ obesity, data = train_data, Hess = TRUE)
+    # Predict on test data
+    pred <- predict(model, newdata = test_data, type = "class")
+    results[[i]] <- confusionMatrix(data = pred, reference = test_data$level_num)
+}
+
+# Calculate average performance
+mean_accuracy <- mean(sapply(results, function(x) x$overall['Accuracy']))
+print(paste0("The performance of the model that uses the level of obesity to predict the severity of lung cancer is: ", mean_accuracy))
+```
+Since a model without coughing of blood cannot predict the severity of lung cancer better, it confirms our thought that there might be other confounding variables that we need consider besides the ones that we have in our data table. This idea can be proved by a lung cancer related article called "Signs and Symptoms of Lung Cancer." In the article, it stated that the most common symptoms of lung cancer indeed include the coughing of blood[^8]. However, it also includes some other symptoms that are not mentioned in our data set: bone pain, headache, etc [^10]. Because of the information provided by this article, we also proved our second assumption that coughing of blood might only be clinically significant.
+
+In addition, due to the possibility of having confounding variables, even though the model has a relatively higher accuracy (82% chance to predict correctly), we still think the model is not a sufficient predictor for medical use. It might only be useful for people who wants to perform a simple self-check.
+
+### Results
+  
+  From our exploratory data analysis, we were able to note some important findings. When we plotted the given factors from our data set and the severity of cancer level (low, medium, high), we found that for the factors: air pollution, chest pain, chronic lung disease, obesity, occupational hazards, genetic risk, and dust allergies, they appear to follow a pattern of being more severe as the severity of lung cancer also increases. 
+
+  We performed the Spearman’s Rank Correlation test on two sets of variables in a data set: level with obesity and level with coughing of blood. For the first set of variables with obesity, we found a Spearman’s rank correlation coefficient of around 0.8154. This indicates a strong positive correlation between the two variables and the p value found is less than 2.2e-16 shows that the correlation is statistically significant. The second set of variables of coughing of blood found the coefficient to be 0.7663 which also shows a strong positive correlation, but weaker correlation than from the first set of variables. The p value for this set is also less than 2.2e-16, which indicates that this correlation is statistically significant. A Spearman’s rank correlation coefficient of 0.8154 is closer to 1 than 0.7663, which suggests that obesity has a stronger positive relationship with the cancer severity levels than coughing of blood. 
+
+  After our observations from the Spearman’s Rank Correlation test, we decided to use the Ordinal Logistic Regression model to use the level of obesity and coughing of blood to predict the level of severity of lung cancer, which can help analyze the relationship for ordinal predictors and outcome. From the results of this model, we found that it’s findings suggest that as obesity increases, the lung cancer severity increases at a stronger relationship than with levels fo coughing of blood with severity of lung cancer. However, the accuracy of these models may not be high enough to be used for professional medical care, but rather for individual checks instead. 
+
+  From these findings, we can conclude that out of the factors originally given of air pollution, chest pain, chronic lung disease, obesity, occupational hazards, genetic risk, and dust allergies, the factor that may be the strongest indicator of higher levels of lung cancer would be obesity. 
+
+## Conclusion
+
+  Based on our analysis, obesity emerges as a significant predictor of lung cancer severity, demonstrating a stronger relationship compared to other factors like coughing of blood. Our Spearman’s Rank Correlation test and Ordinal Logistic Regression model reinforce this finding, suggesting obesity's impactful role in lung cancer progression. 
+  
+  However, one limitation of our analysis is that the data set lacks a description regarding the coding of the 'Gender' variable, where the significance of values '1' and '2' remains undefined. Although there was the possibility of following the convention of ‘1’ indicating male and ‘2’ indicating female, we did not feel comfortable using and interpreting gender in this analysis if we didn’t know for certain. Also, the data set does not provide clear definitions for the different 'Level' categories, which might cause misunderstanding such as which direction indicates more severe symptoms. There is no description for what constitutes a patient to have ‘Low’ vs ‘Medium’ vs ‘High’ cancer severity, making these classifications less informative and relatively ambiguous. This absence of detailed descriptions of the values measured in the data set limits our ability to fully understand and interpret the data, potentially leading to imprecise or misleading conclusions. 
+  
+  As we mentioned above, another potential limitation to consider is the presence of confounding variables not included in our data set. There might be a third variable that influences the lung cancer severity level.  Also, as the paper states [^10], some common symptoms of lung cancer like bone pain and headaches are not taken into account in our data set. This suggests the need for a broader scope in our analysis to capture a more comprehensive range of lung cancer symptoms. Therefore, the current model is not qualified for medical use.
+  
+  To improve this, future research should have a clear description when collecting data and expand the symptoms included in the data set. It's important to define gender coding and include details of cancer severity level categorizations. Besides, expanding the data set to include a wider range of symptoms, such as bone pain and headaches, could provide a more holistic understanding of lung cancer's clinical presentation. 
+  
+  For a potential future study, collecting data from a control group of healthy individuals without cancer into our data set could be considered. By comparing this group with those diagnosed with lung cancer, we can better identify predictors that distinguish between the presence and absence of lung cancer. This would allow us to explore not only factors beyond predicting severity but also understand the risk factors and early warning signs of lung cancer. 
+
+## References
+[^1]: Centers for Disease Control and Prevention. "What Is Lung Cancer?" CDC, https://www.cdc.gov/cancer/lung/basic_info/what-is-lung-cancer.htm.
+[^2]: World Health Organization. "Lung Cancer" WHO, https://www.who.int/news-room/fact-sheets/detail/lung-cancer 
+[^3]: National Cancer Institute, "Cancer Stat Facts", https://seer.cancer.gov/statfacts/
+[^4]: Berg, Christine D., et al. "Air Pollution and Lung Cancer: A Review by International Association for the Study of Lung Cancer Early Detection and Screening Committee." Journal of Thoracic Oncology, vol. 18, issue. 10, 2023, https://doi.org/10.1016/j.jtho.2023.05.024.
+[^5]: Turner, MC, Andersen, ZJ, Baccarelli, A, Diver, WR, Gapstur, SM, Pope, CA, Prada, D, Samet, J, Thurston, G, Cohen, A. Outdoor air pollution and cancer: An overview of the current evidence and public health recommendations. CA Cancer J Clin. 2020: 70: 460-479. https://doi.org/10.3322/caac.21632 
+[^6]: Centers for Disease Control and Prevention. "Lung Cancer Symptoms." CDC, https://www.cdc.gov/cancer/lung/basic_info/symptoms.htm.
+[^7]: Polanski, Jacek., et al. "Quality of life of patients with lung cancer." OncoTargets and Therapy, vol. 9. 2016, https://doi.org/10.2147/OTT.S100685 
+[^8]: Lung Cancer Prediction. https://www.kaggle.com/datasets/thedevastator/cancer-patients-and-air-pollution-a-new-link
+[^9]: Olsen, L. R. (2023, June 28). Multiple-k: Picking the number of folds for cross-validation. Cran. https://cran.r-project.org/web/packages/cvms/vignettes/picking_the_number_of_folds_for_cross-validation.html#:~:text=When%20performing%20cross%2Dvalidation%2C%20it,common%20to%20use%2010%20folds. 
+[^10]: Lung cancer signs &amp; symptoms: Common symptoms of lung cancer. Lung Cancer Signs &amp; Symptoms | Common Symptoms of Lung Cancer | American Cancer Society. (n.d.). https://www.cancer.org/cancer/types/lung-cancer/detection-diagnosis-staging/signs-symptoms.html 
